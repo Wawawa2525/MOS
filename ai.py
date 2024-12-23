@@ -106,6 +106,18 @@ def evaluate_board_with_table(board, stone, eval_table):
                 score -= eval_table[y][x]
     return score
 
+# X-squareペナルティを考慮した評価
+def evaluate_with_risk(board, stone):
+    x_squares = [(0, 1), (1, 0), (1, 1), (0, 4), (1, 5), (1, 4),
+                 (4, 0), (5, 1), (4, 1), (4, 5), (5, 4), (4, 4)]
+    score = evaluate_board_with_table(board, stone, EARLY_EVAL_TABLE)
+
+    for x, y in x_squares:
+        if board[y][x] == stone:
+            score -= 100
+
+    return score
+
 # 置ける場所をリストアップする関数
 def get_valid_moves(board, stone):
     moves = []
@@ -135,88 +147,88 @@ def place_stone(board, stone, x, y):
 
     return new_board
 
-# 序盤専用のαβ探索
-def alpha_beta_early(board, stone, depth, alpha, beta, maximizing):
-    if depth == 0 or not can_place(board, stone):
-        return evaluate_board_with_table(board, stone, EARLY_EVAL_TABLE), None
+# ミニマックス探索（改良版）
+def minimax(board, stone, depth, is_maximizing):
+    opponent = 3 - stone
 
-    moves = get_valid_moves(board, stone)
-    moves = sorted(moves, key=lambda move: evaluate_board_with_table(place_stone(board, stone, move[0], move[1]), stone, EARLY_EVAL_TABLE), reverse=maximizing)
+    if depth == 0 or not can_place(board, stone) and not can_place(board, opponent):
+        return evaluate_with_risk(board, stone)
 
-    if maximizing:
+    if is_maximizing:
         max_eval = -float('inf')
-        best_move = None
-        for move in moves:
-            new_board = place_stone(board, stone, move[0], move[1])
-            eval_score, _ = alpha_beta_early(new_board, 3 - stone, depth - 1, alpha, beta, False)
-            if eval_score > max_eval:
-                max_eval = eval_score
-                best_move = move
-            alpha = max(alpha, eval_score)
-            if beta <= alpha:
-                break
-        return max_eval, best_move
+        for y in range(len(board)):
+            for x in range(len(board[0])):
+                if can_place_x_y(board, stone, x, y):
+                    new_board = place_stone(board, stone, x, y)
+                    eval = minimax(new_board, opponent, depth - 1, False)
+                    max_eval = max(max_eval, eval)
+        return max_eval
     else:
         min_eval = float('inf')
-        best_move = None
-        for move in moves:
-            new_board = place_stone(board, stone, move[0], move[1])
-            eval_score, _ = alpha_beta_early(new_board, 3 - stone, depth - 1, alpha, beta, True)
-            if eval_score < min_eval:
-                min_eval = eval_score
-                best_move = move
-            beta = min(beta, eval_score)
-            if beta <= alpha:
-                break
-        return min_eval, best_move
-def mcts_move(board, stone, simulations=2000):
-    moves = get_valid_moves(board, stone)
-    if not moves:
-        return None
+        for y in range(len(board)):
+            for x in range(len(board[0])):
+                if can_place_x_y(board, opponent, x, y):
+                    new_board = place_stone(board, opponent, x, y)
+                    eval = minimax(new_board, stone, depth - 1, True)
+                    min_eval = min(min_eval, eval)
+        return min_eval
 
-    def simulate_move(move):
-        scores = 0
-        for _ in range(simulations // len(moves)):
-            simulated_board = place_stone(board, stone, move[0], move[1])
-            current_stone = 3 - stone
-            for _ in range(10):  # 最大10手のランダムプレイアウト
-                valid_moves = get_valid_moves(simulated_board, current_stone)
-                if not valid_moves:
-                    break
-                random_move = max(valid_moves, key=lambda m: evaluate_board_with_table(
-                    place_stone(simulated_board, current_stone, m[0], m[1]),
-                    current_stone,
-                    MID_EVAL_TABLE
-                ))
-                simulated_board = place_stone(simulated_board, current_stone, random_move[0], random_move[1])
-                current_stone = 3 - current_stone
-            scores += evaluate_board_with_table(simulated_board, stone, MID_EVAL_TABLE)
-        return scores
+# X-squareを避けつつ中盤の最善手を選択
+def best_place_with_risk_management(board, stone):
+    corners = [(0, 0), (0, 5), (5, 0), (5, 5)]
+    x_squares = [(0, 1), (1, 0), (1, 1), (0, 4), (1, 5), (1, 4),
+                 (4, 0), (5, 1), (4, 1), (4, 5), (5, 4), (4, 4)]
 
-    with ThreadPoolExecutor() as executor:
-        results = executor.map(simulate_move, moves)
+    best_score = -float('inf')
+    best_move = None
 
-    move_scores = {move: score for move, score in zip(moves, results)}
-    best_move = max(move_scores, key=move_scores.get)
+    for y in range(len(board)):
+        for x in range(len(board[0])):
+            if not can_place_x_y(board, stone, x, y):
+                continue
+
+            if (x, y) in corners:
+                return (x, y)
+
+            score = count_flippable_stones(board, stone, x, y)
+
+            if (x, y) in x_squares:
+                score -= 100
+
+            if score > best_score:
+                best_score = score
+                best_move = (x, y)
+
     return best_move
 
-class HybridAI(object):
+class ImprovedAI(object):
 
     def face(self):
         return "✨"
 
     def place(self, board, stone):
-        valid_moves = get_valid_moves(board, stone)
-        if not valid_moves:
-            return None
-
-        total_stones = sum(row.count(BLACK) + row.count(WHITE) for row in board)
-
-        if total_stones < 20:  # 序盤
-            _, best_move = alpha_beta_early(board, stone, depth=4, alpha=-float('inf'), beta=float('inf'), maximizing=True)
+        empty_cells = sum(row.count(0) for row in board)
+        if empty_cells <= 10:  # 終盤
+            best_eval = -float('inf')
+            best_move = None
+            for y in range(len(board)):
+                for x in range(len(board[0])):
+                    if can_place_x_y(board, stone, x, y):
+                        new_board = place_stone(board, stone, x, y)
+                        eval = minimax(new_board, stone, depth=4, is_maximizing=False)
+                        if eval > best_eval:
+                            best_eval = eval
+                            best_move = (x, y)
             return best_move
-        elif total_stones < 50:  # 中盤
-            return mcts_move(board, stone, simulations=2000)
-        else:  # 終盤
-            _, best_move = alpha_beta(board, stone, depth=8, alpha=-float('inf'), beta=float('inf'), maximizing=True)
+
+        else:  # 中盤
+            best_score = -float('inf')
+            best_move = None
+            for y in range(len(board)):
+                for x in range(len(board[0])):
+                    if can_place_x_y(board, stone, x, y):
+                        score = evaluate_with_risk(place_stone(board, stone, x, y), stone)
+                        if score > best_score:
+                            best_score = score
+                            best_move = (x, y)
             return best_move
